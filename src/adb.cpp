@@ -36,20 +36,16 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 */
 
-#include <stdbool.h>
-#include <util/delay.h>
-#include <avr/io.h>
-#include <avr/interrupt.h>
-#include "adb.h"
-//#include "print.h"
-
+#include "adb.hpp"
 
 // GCC doesn't inline functions normally
-#define data_lo() (ADB_DDR |=  (1<<ADB_DATA_BIT))
-#define data_hi() (ADB_DDR &= ~(1<<ADB_DATA_BIT))
-#define data_in() (ADB_PIN &   (1<<ADB_DATA_BIT))
+#define data_output() (gpio_set_dir(ADB_DATA, GPIO_OUT))
+#define data_lo() (gpio_put(ADB_DATA, 1)) // Inverted
+#define data_hi() (gpio_put(ADB_DATA, 0))
+#define data_input() (gpio_set_dir(ADB_DATA, GPIO_IN))
+#define data_in() (gpio_get(ADB_DATA))
 
-#ifdef ADB_PSW_BIT
+#ifdef ADB_PSW
 static inline void psw_lo(void);
 static inline void psw_hi(void);
 static inline bool psw_in(void);
@@ -62,17 +58,16 @@ static inline void send_byte(uint8_t data);
 static inline uint16_t wait_data_lo(uint16_t us);
 static inline uint16_t wait_data_hi(uint16_t us);
 
-
 void adb_host_init(void)
 {
-    ADB_PORT &= ~(1<<ADB_DATA_BIT);
+    data_output();
     data_hi();
-#ifdef ADB_PSW_BIT
+#ifdef ADB_PSW
     psw_hi();
 #endif
 }
 
-#ifdef ADB_PSW_BIT
+#ifdef ADB_PSW
 bool adb_host_psw(void)
 {
     return psw_in();
@@ -109,7 +104,8 @@ uint8_t adb_host_talk_buf(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len)
 {
     for (int8_t i =0; i < len; i++) buf[i] = 0;
 
-    cli();
+    //uint32_t ints = save_and_disable_interrupts();
+    data_output();
     attention();
     send_byte((addr<<4) | ADB_CMD_TALK | reg);
     place_bit0();               // Stopbit(0)
@@ -157,25 +153,26 @@ uint8_t adb_host_talk_buf(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len)
     // portion of the stop bit of any command or data transaction. The device must lengthen
     // the stop by a minimum of 140 J.lS beyond its normal duration, as shown in Figure 8-15."
     // http://ww1.microchip.com/downloads/en/AppNotes/00591b.pdf
+    data_input();
     if (!wait_data_hi(500)) {    // Service Request(310us Adjustable Keyboard): just ignored
         //xprintf("R");
-        sei();
+        //restore_interrupts(ints);
         return 0;
     }
     if (!wait_data_lo(500)) {   // Tlt/Stop to Start(140-260us)
-        sei();
+        //restore_interrupts(ints);
         return 0;               // No data from device(not error);
     }
 
     // start bit(1)
     if (!wait_data_hi(40)) {
         //xprintf("S");
-        sei();
+        //restore_interrupts(ints);
         return 0;
     }
     if (!wait_data_lo(100)) {
         //xprintf("s");
-        sei();
+        //restore_interrupts(ints);
         return 0;
     }
 
@@ -196,7 +193,7 @@ uint8_t adb_host_talk_buf(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len)
 
         uint8_t hi = (uint8_t) wait_data_lo(lo);
         if (!hi)
-            goto error; // stop bit extedned by Srq?
+            goto error; // stop bit extended by Srq?
 
         if (n/8 >= len) continue; // can't store in buf
 
@@ -208,7 +205,7 @@ uint8_t adb_host_talk_buf(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len)
     while ( ++n );
 
 error:
-    sei();
+    //restore_interrupts(ints);
     return n/8;
 }
 
@@ -223,19 +220,20 @@ uint16_t adb_host_talk(uint8_t addr, uint8_t reg)
 
 void adb_host_listen_buf(uint8_t addr, uint8_t reg, uint8_t *buf, uint8_t len)
 {
-    cli();
+    //uint32_t ints = save_and_disable_interrupts();
+    data_output();
     attention();
     send_byte((addr<<4) | ADB_CMD_LISTEN | reg);
     place_bit0();               // Stopbit(0)
     // TODO: Service Request
-    _delay_us(200);             // Tlt/Stop to Start
+    sleep_us(200);             // Tlt/Stop to Start
     place_bit1();               // Startbit(1)
     for (int8_t i = 0; i < len; i++) {
         send_byte(buf[i]);
         //xprintf("%02X ", buf[i]);
     }
     place_bit0();               // Stopbit(0);
-    sei();
+    //restore_interrupts(ints);
 }
 
 void adb_host_listen(uint8_t addr, uint8_t reg, uint8_t data_h, uint8_t data_l)
@@ -246,12 +244,13 @@ void adb_host_listen(uint8_t addr, uint8_t reg, uint8_t data_h, uint8_t data_l)
 
 void adb_host_flush(uint8_t addr)
 {
-    cli();
+    //uint32_t ints = save_and_disable_interrupts();
+    data_output();
     attention();
     send_byte((addr<<4) | ADB_CMD_FLUSH);
     place_bit0();               // Stopbit(0)
-    _delay_us(200);             // Tlt/Stop to Start
-    sei();
+    sleep_us(200);             // Tlt/Stop to Start
+    //restore_interrupts(ints);
 }
 
 // send state of LEDs
@@ -264,46 +263,46 @@ void adb_host_kbd_led(uint8_t addr, uint8_t led)
 }
 
 
-#ifdef ADB_PSW_BIT
+#ifdef ADB_PSW
 static inline void psw_lo()
 {
-    ADB_DDR  |=  (1<<ADB_PSW_BIT);
-    ADB_PORT &= ~(1<<ADB_PSW_BIT);
+    gpio_set_dir(ADB_PSW, GPIO_OUT);
+    gpio_put(ADB_PSW, 0);
 }
 static inline void psw_hi()
 {
-    ADB_PORT |=  (1<<ADB_PSW_BIT);
-    ADB_DDR  &= ~(1<<ADB_PSW_BIT);
+    gpio_put(ADB_PSW, 1);
+    gpio_set_dir(ADB_PSW, GPIO_IN);
 }
 static inline bool psw_in()
 {
-    ADB_PORT |=  (1<<ADB_PSW_BIT);
-    ADB_DDR  &= ~(1<<ADB_PSW_BIT);
-    return ADB_PIN&(1<<ADB_PSW_BIT);
+    gpio_put(ADB_PSW, 1);
+    gpio_set_dir(ADB_PSW, GPIO_IN);
+    return gpio_get(ADB_PSW);
 }
 #endif
 
 static inline void attention(void)
 {
     data_lo();
-    _delay_us(800-35); // bit1 holds lo for 35 more
+    sleep_us(800-35); // bit1 holds lo for 35 more
     place_bit1();
 }
 
 static inline void place_bit0(void)
 {
     data_lo();
-    _delay_us(65);
+    sleep_us(65);
     data_hi();
-    _delay_us(35);
+    sleep_us(35);
 }
 
 static inline void place_bit1(void)
 {
     data_lo();
-    _delay_us(35);
+    sleep_us(35);
     data_hi();
-    _delay_us(65);
+    sleep_us(65);
 }
 
 static inline void send_byte(uint8_t data)
@@ -318,12 +317,13 @@ static inline void send_byte(uint8_t data)
 
 // These are carefully coded to take 6 cycles of overhead.
 // inline asm approach became too convoluted
+// Make sure to call data_input() before
 static inline uint16_t wait_data_lo(uint16_t us)
 {
     do {
         if ( !data_in() )
             break;
-        _delay_us(1 - (6 * 1000000.0 / F_CPU));
+        sleep_us(1);
     }
     while ( --us );
     return us;
@@ -334,7 +334,7 @@ static inline uint16_t wait_data_hi(uint16_t us)
     do {
         if ( data_in() )
             break;
-        _delay_us(1 - (6 * 1000000.0 / F_CPU));
+        sleep_us(1);
     }
     while ( --us );
     return us;

@@ -41,21 +41,19 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <stdint.h>
 #include <stdbool.h>
 
-#define ADB_PORT PORTB
-#define ADB_PIN PINB
-#define ADB_DDR DDRB
-#define ADB_DATA_BIT 0
+#include "pico/stdlib.h"
+#include "hardware/irq.h"
+#include "hardware/sync.h"
 
-#if !(defined(ADB_PORT) && \
-      defined(ADB_PIN)  && \
-      defined(ADB_DDR)  && \
-      defined(ADB_DATA_BIT))
-#   error "ADB port setting is required in config.h"
+#define ADB_DATA 2
+//#define ADB_PSW 3
+
+#ifndef ADB_DATA
+#   error "ADB input pin setting is required"
 #endif
 
 #define ADB_POWER       0x7F
 #define ADB_CAPS        0x39
-
 
 /* ADB commands */
 // Default Address
@@ -99,7 +97,6 @@ POSSIBILITY OF SUCH DAMAGE.
 #define ADB_HANDLER_EXTENDED_MOUSE      0x04
 #define ADB_HANDLER_TURBO_MOUSE         0x32
 
-
 // ADB host
 void     adb_host_init(void);
 bool     adb_host_psw(void);
@@ -112,6 +109,5 @@ void     adb_host_flush(uint8_t addr);
 void     adb_host_kbd_led(uint8_t addr, uint8_t led);
 void     adb_mouse_task(void);
 void     adb_mouse_init(void);
-
 
 #endif
